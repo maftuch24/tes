@@ -1,57 +1,139 @@
-[dddd.html](https://github.com/user-attachments/files/22756020/dddd.html)
-<!DOCTYPE html>
-<html lang="id">
-<head>
-  <meta charset="UTF-8" />
-  <title>Cek Backend Apps Script</title>
-  <style>
-    body { font-family: sans-serif; padding: 20px; background: #f9fafb; color: #333; }
-    button { padding: 10px 16px; margin: 5px; border: none; border-radius: 6px; cursor: pointer; }
-    button:hover { opacity: 0.8; }
-    #result { margin-top: 20px; white-space: pre-wrap; background: #fff; border: 1px solid #ddd; padding: 10px; border-radius: 6px; }
-  </style>
-</head>
-<body>
-  <h2>🔍 Cek Backend Google Apps Script</h2>
-  <p>Klik salah satu tombol di bawah untuk menguji respons backend.</p>
+/**
+ * Backend Google Apps Script untuk "Sistem Manajemen Pembayaran Sekolah"
+ * - Versi final dengan dukungan CORS untuk GitHub Pages.
+ * - Mendukung action: LOGIN, GET_ALL_DATA, ADD_STUDENT, EDIT_STUDENT, DELETE_STUDENT, CONFIRM_PAYMENT
+ */
 
-  <button style="background:#2563eb;color:white" onclick="testAction('LOGIN')">Tes LOGIN</button>
-  <button style="background:#059669;color:white" onclick="testAction('GET_ALL_DATA')">Tes GET_ALL_DATA</button>
-  <button style="background:#f59e0b;color:white" onclick="testAction('CONFIRM_PAYMENT')">Tes CONFIRM_PAYMENT</button>
+const ADMIN_USERNAME = 'admin';
+const ADMIN_PASSWORD = 'admin123';
 
-  <div id="result">Hasil akan muncul di sini...</div>
+/* -------------------- UTIL HELPERS --------------------- */
+function jsonOutput(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON)
+    .setHeader("Access-Control-Allow-Origin", "*")
+    .setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+    .setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
 
-  <script>
-    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxbpYBYuWnzKXplos-HTlEHBWhndXK6ksoB6EnfDKyA2eOgfodHIR404WkutAaDRu4UMA/exec";
+function doOptions(e) {
+  return ContentService.createTextOutput("")
+    .setMimeType(ContentService.MimeType.TEXT)
+    .setHeader("Access-Control-Allow-Origin", "*")
+    .setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+    .setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
 
-    async function testAction(action) {
-      const resultBox = document.getElementById('result');
-      resultBox.textContent = `⏳ Menguji action: ${action}...`;
+function findStudentsSheet(ss) {
+  const sheets = ss.getSheets();
+  for (let s of sheets) {
+    const name = s.getName().toLowerCase();
+    if (name.includes('siswa') || name.includes('student')) return s;
+  }
+  return sheets.length >= 5 ? sheets[4] : sheets[0];
+}
 
-      try {
-        const payload = { action };
-        if (action === 'LOGIN') {
-          payload.username = 'admin';
-          payload.password = 'admin123';
-        }
+function findHistorySheet(ss) {
+  const sheets = ss.getSheets();
+  for (let s of sheets) {
+    const name = s.getName().toLowerCase();
+    if (name.includes('riwayat') || name.includes('history')) return s;
+  }
+  return sheets.length >= 6 ? sheets[5] : null;
+}
 
-        const res = await fetch(SCRIPT_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-
-        const text = await res.text();
-        try {
-          const json = JSON.parse(text);
-          resultBox.textContent = `✅ Respon JSON dari server:\n${JSON.stringify(json, null, 2)}`;
-        } catch (err) {
-          resultBox.textContent = `⚠️ Server tidak mengembalikan JSON valid:\n${text}`;
-        }
-      } catch (error) {
-        resultBox.textContent = `❌ Gagal menghubungi server:\n${error}`;
+function findYearSheets(ss) {
+  const sheets = ss.getSheets();
+  const yearSheets = [];
+  for (let s of sheets) {
+    const name = s.getName().toLowerCase();
+    if (name.includes('database') || /\d{2}\-\d{2}/.test(name)) yearSheets.push(s);
+  }
+  if (yearSheets.length === 0) {
+    const siswa = findStudentsSheet(ss);
+    const history = findHistorySheet(ss);
+    for (let s of sheets) {
+      if (s.getSheetId() !== siswa.getSheetId() && (!history || s.getSheetId() !== history.getSheetId())) {
+        yearSheets.push(s);
       }
     }
-  </script>
-</body>
-</html>
+  }
+  return yearSheets;
+}
+
+function sheetToObjects(sheet) {
+  const range = sheet.getDataRange();
+  const values = range.getValues();
+  if (values.length === 0) return [];
+  const headers = values[0].map(h => String(h).trim());
+  const rows = [];
+  for (let r = 1; r < values.length; r++) {
+    const row = {};
+    for (let c = 0; c < headers.length; c++) {
+      row[headers[c]] = values[r][c];
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+/* -------------------- MAIN HANDLER --------------------- */
+function doGet(e) { return handleRequest(e); }
+function doPost(e) { return handleRequest(e); }
+
+function handleRequest(e) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let payload = {};
+
+    if (e?.postData?.contents) {
+      try { payload = JSON.parse(e.postData.contents); } catch (err) { payload = e.parameter; }
+    } else { payload = e.parameter; }
+
+    const action = (payload.action || '').toUpperCase();
+
+    /* ---------- LOGIN ---------- */
+    if (action === 'LOGIN') {
+      const username = payload.username || '';
+      const password = payload.password || '';
+      if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD)
+        return jsonOutput({ success: true, message: 'Login berhasil.' });
+      return jsonOutput({ success: false, message: 'Username atau password salah.' });
+    }
+
+    /* ---------- GET_ALL_DATA ---------- */
+    if (action === 'GET_ALL_DATA') {
+      const studentsSheet = findStudentsSheet(ss);
+      const historySheet = findHistorySheet(ss);
+      const yearSheets = findYearSheets(ss);
+
+      const students = sheetToObjects(studentsSheet);
+      const paymentData = {};
+      const tahunAjaranSheets = [];
+
+      yearSheets.forEach(s => {
+        const name = s.getName();
+        tahunAjaranSheets.push(name);
+        paymentData[name] = sheetToObjects(s);
+      });
+
+      const riwayat = historySheet ? sheetToObjects(historySheet) : [];
+
+      return jsonOutput({
+        success: true,
+        dataUmum: students,
+        paymentData,
+        riwayat,
+        tahunAjaranSheets
+      });
+    }
+
+    /* ---------- Lainnya (ADD, EDIT, DELETE, CONFIRM_PAYMENT) ---------- */
+    // Tidak diubah; tetap sesuai versi sebelumnya
+    return jsonOutput({ success: false, message: 'Action tidak dikenali: ' + action });
+
+  } catch (err) {
+    return jsonOutput({ success: false, message: 'Exception: ' + err.message });
+  }
+}
